@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>線上示波器</title>
+    <link rel="icon" href="favicon.ico" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 強制使用微軟正黑體 */
+        body {
+            font-family: "Microsoft JhengHei", "微軟正黑體", sans-serif;
+            background-color: #0f172a; /* 深藍色背景，讓波形更明顯 */
+            overflow: hidden; /* 防止滾動 */
+        }
+
+        /* 示波器螢幕的掃描線效果 */
+        .crt-screen {
+            background: radial-gradient(circle, #1e293b 0%, #020617 100%);
+            border: 2px solid #334155;
+            box-shadow: inset 0 0 20px #000000;
+            position: relative;
+        }
+
+        /* 網格背景 */
+        .grid-bg {
+            background-image: 
+                linear-gradient(rgba(173, 216, 230, 0.1) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(173, 216, 230, 0.1) 1px, transparent 1px);
+            background-size: 50px 50px;
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
+        
+        /* 中心線強調 */
+        .grid-center-x {
+            position: absolute;
+            top: 50%;
+            left: 0;
+            width: 100%;
+            height: 1px;
+            background-color: rgba(173, 216, 230, 0.4);
+        }
+        .grid-center-y {
+            position: absolute;
+            left: 50%;
+            top: 0;
+            height: 100%;
+            width: 1px;
+            background-color: rgba(173, 216, 230, 0.4);
+        }
+
+        /* 控制面板玻璃擬態 */
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        /* 自定義滑桿樣式 */
+        input[type=range] {
+            -webkit-appearance: none; 
+            background: transparent; 
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #FFF44F; /* 檸檬黃 */
+            cursor: pointer;
+            margin-top: -6px; 
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: #ADD8E6; /* 淡藍 */
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body class="text-white h-screen flex flex-col">
+
+    <!-- 頂部標題與狀態 -->
+    <header class="p-4 flex justify-between items-center bg-slate-900/80 z-10">
+        <div class="flex items-center gap-2">
+            <div class="w-3 h-3 rounded-full bg-red-500 animate-pulse" id="status-dot"></div>
+            <h1 class="text-xl font-bold tracking-wider text-cyan-300">AUDIO OSCILLOSCOPE</h1>
+        </div>
+        <div class="text-sm font-mono text-yellow-300" id="fps-counter">FPS: 0</div>
+    </header>
+
+    <!-- 主要示波器顯示區域 -->
+    <main class="flex-grow relative flex justify-center items-center p-4">
+        <div class="crt-screen w-full h-full rounded-lg overflow-hidden relative" id="canvas-container">
+            <!-- 背景網格 -->
+            <div class="grid-bg"></div>
+            <div class="grid-center-x"></div>
+            <div class="grid-center-y"></div>
+            
+            <!-- 繪圖畫布 -->
+            <canvas id="oscilloscope" class="absolute top-0 left-0 z-10"></canvas>
+            
+            <!-- 啟動提示覆蓋層 -->
+            <div id="start-overlay" class="absolute inset-0 flex flex-col items-center justify-center bg-black/60 z-20 backdrop-blur-sm">
+                <p class="mb-4 text-cyan-200 text-lg">點擊下方按鈕開始擷取麥克風音訊</p>
+                <button id="start-btn" class="px-8 py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-bold rounded-full transition-all transform hover:scale-105 shadow-[0_0_15px_rgba(34,211,238,0.5)]">
+                    啟動示波器 🎙️
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- 底部控制面板 -->
+    <footer class="glass-panel p-6 pb-8">
+        <div class="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-8">
+            
+            <!-- 控制項 1: 增益 (Gain/Zoom Y) -->
+            <div class="flex flex-col gap-2">
+                <label class="text-sm text-cyan-200 font-bold flex justify-between">
+                    <span>垂直振幅 (Gain)</span>
+                    <span id="gain-val" class="text-yellow-300">1.0x</span>
+                </label>
+                <input type="range" id="gain-control" min="0.5" max="5.0" step="0.1" value="1.5" class="w-full">
+            </div>
+
+            <!-- 控制項 2: 線條粗細 -->
+            <div class="flex flex-col gap-2">
+                <label class="text-sm text-cyan-200 font-bold flex justify-between">
+                    <span>線條粗細</span>
+                    <span id="width-val" class="text-yellow-300">3px</span>
+                </label>
+                <input type="range" id="width-control" min="1" max="10" step="0.5" value="3" class="w-full">
+            </div>
+
+            <!-- 控制項 3: 顏色切換 (隱藏功能，預設檸檬黃) -->
+            <div class="flex flex-col gap-2">
+                <label class="text-sm text-cyan-200 font-bold">波形顏色</label>
+                <div class="flex gap-4">
+                    <button class="color-btn w-8 h-8 rounded-full bg-[#FFF44F] ring-2 ring-offset-2 ring-offset-slate-900 ring-yellow-300 transition-transform hover:scale-110" data-color="#FFF44F" title="檸檬黃"></button>
+                    <button class="color-btn w-8 h-8 rounded-full bg-[#ADD8E6] transition-transform hover:scale-110 opacity-70 hover:opacity-100" data-color="#ADD8E6" title="淡藍"></button>
+                    <button class="color-btn w-8 h-8 rounded-full bg-[#FF69B4] transition-transform hover:scale-110 opacity-70 hover:opacity-100" data-color="#FF69B4" title="霓虹粉"></button>
+                    <button class="color-btn w-8 h-8 rounded-full bg-[#00FF00] transition-transform hover:scale-110 opacity-70 hover:opacity-100" data-color="#00FF00" title="駭客綠"></button>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // DOM 元素
+        const canvas = document.getElementById('oscilloscope');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('canvas-container');
+        const startBtn = document.getElementById('start-btn');
+        const overlay = document.getElementById('start-overlay');
+        const statusDot = document.getElementById('status-dot');
+        const gainSlider = document.getElementById('gain-control');
+        const gainVal = document.getElementById('gain-val');
+        const widthSlider = document.getElementById('width-control');
+        const widthVal = document.getElementById('width-val');
+        const fpsCounter = document.getElementById('fps-counter');
+        const colorBtns = document.querySelectorAll('.color-btn');
+
+        // 音訊變數
+        let audioContext;
+        let analyser;
+        let dataArray;
+        let bufferLength;
+        let source;
+        let isRunning = false;
+        let animationId;
+
+        // 設定變數
+        let waveColor = '#FFF44F'; // 預設檸檬黃
+        let lineWidth = 3;
+        let gain = 1.5;
+
+        // 初始化 Canvas 尺寸
+        function resizeCanvas() {
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // 啟動音訊功能
+        async function initAudio() {
+            try {
+                // 1. 建立 AudioContext
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // 2. 獲取麥克風權限
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // 3. 建立分析器
+                analyser = audioContext.createAnalyser();
+                // fftSize 決定了解析度，2048 是一個很好的平衡點
+                analyser.fftSize = 2048; 
+                bufferLength = analyser.frequencyBinCount;
+                dataArray = new Uint8Array(bufferLength);
+
+                // 4. 連接節點
+                source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+                // 注意：不要連接到 audioContext.destination，否則會聽到回音嘯叫！
+
+                // UI 更新
+                overlay.style.opacity = '0';
+                setTimeout(() => overlay.style.display = 'none', 300);
+                statusDot.classList.remove('bg-red-500');
+                statusDot.classList.add('bg-green-500');
+                
+                isRunning = true;
+                draw();
+
+            } catch (err) {
+                console.error('無法存取麥克風:', err);
+                alert('糟糕！無法存取麥克風。請確保你允許了權限，並檢查麥克風設定。');
+            }
+        }
+
+        // 觸發算法 (Triggering) - 讓波形穩定顯示的關鍵
+        // 尋找波形向上穿過零點的位置，作為繪製的起點
+        function findZeroCrossing(buf, buflen) {
+            let i = 0;
+            let last_zero = -1;
+            let t;
+
+            // 稍微提高閾值以過濾雜訊
+            // 128 是 8-bit 音訊的靜音點 (0~255 的中間)
+            
+            // 先快進到波形低於 128 的地方
+            while (i < buflen && (buf[i] > 128)) {
+                i++;
+            }
+
+            if (i >= buflen) return 0;
+
+            // 再尋找波形穿過 128 變高的地方
+            while (i < buflen && ((t = buf[i]) < 128)) {
+                i++;
+            }
+
+            if (i >= buflen) return 0;
+
+            return i;
+        }
+
+        // 繪圖循環
+        let lastTime = 0;
+        function draw(timestamp) {
+            if (!isRunning) return;
+            
+            // 計算 FPS
+            if (timestamp) {
+                const fps = Math.round(1000 / (timestamp - lastTime));
+                if (timestamp % 10 === 0) fpsCounter.innerText = `FPS: ${fps}`; // 減少更新頻率
+                lastTime = timestamp;
+            }
+
+            animationId = requestAnimationFrame(draw);
+
+            // 獲取時域數據 (Time Domain Data) - 這是波形的關鍵
+            analyser.getByteTimeDomainData(dataArray);
+
+            // 清除畫布
+            ctx.fillStyle = 'rgba(15, 23, 42, 1)'; // 與背景色相同，完全覆蓋以清除上一幀
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 設定線條樣式
+            ctx.lineWidth = lineWidth;
+            ctx.strokeStyle = waveColor;
+            ctx.lineJoin = 'round';
+            
+            // 添加螢光效果 (Glow Effect)
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = waveColor;
+
+            ctx.beginPath();
+
+            const sliceWidth = canvas.width * 1.0 / bufferLength;
+            let x = 0;
+            
+            // 應用觸發算法來穩定波形
+            // 如果我們只從 dataArray[0] 開始畫，波形會因為相位不同而左右抖動
+            let startOffset = findZeroCrossing(dataArray, bufferLength);
+
+            // 如果找不到過零點（例如完全靜音），就從頭開始
+            if (startOffset === 0) startOffset = 0;
+
+            // 為了讓波形在畫面中展開，我們可以調整步長
+            // 這裡使用簡單的邏輯：繪製從觸發點開始的一段
+            
+            // 計算中心線 (128 是 8bit 音訊的靜音值)
+            const centerY = canvas.height / 2;
+
+            for (let i = startOffset; i < bufferLength; i++) {
+                const v = dataArray[i] / 128.0; // 正規化 0~2 之間 (1是靜音)
+                const y = centerY + (v - 1) * centerY * gain; // 應用 Gain 放大振幅
+
+                if (i === startOffset) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+
+                // x 軸推進，可以根據需要調整縮放係數
+                x += sliceWidth * 2; // *2 讓波形橫向拉長一點，更容易看清
+                
+                // 如果畫出螢幕了就停止
+                if (x > canvas.width) break;
+            }
+
+            ctx.stroke();
+            
+            // 繪製一條淡淡的水平基準線
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(173, 216, 230, 0.2)'; // 淡藍色，很透明
+            ctx.lineWidth = 1;
+            ctx.shadowBlur = 0;
+            ctx.moveTo(0, canvas.height / 2);
+            ctx.lineTo(canvas.width, canvas.height / 2);
+            ctx.stroke();
+        }
+
+        // 事件監聽器
+        startBtn.addEventListener('click', initAudio);
+
+        gainSlider.addEventListener('input', (e) => {
+            gain = parseFloat(e.target.value);
+            gainVal.innerText = gain.toFixed(1) + 'x';
+        });
+
+        widthSlider.addEventListener('input', (e) => {
+            lineWidth = parseInt(e.target.value);
+            widthVal.innerText = lineWidth + 'px';
+        });
+
+        // 顏色切換邏輯
+        colorBtns.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                // 更新顏色
+                waveColor = e.target.dataset.color;
+                
+                // 更新 UI 狀態 (Ring effect)
+                colorBtns.forEach(b => {
+                    b.classList.remove('ring-2', 'ring-offset-2', 'ring-offset-slate-900', 'ring-yellow-300', 'ring-cyan-300', 'ring-pink-300', 'ring-green-300');
+                    b.classList.add('opacity-70');
+                });
+                e.target.classList.remove('opacity-70');
+                e.target.classList.add('ring-2', 'ring-offset-2', 'ring-offset-slate-900');
+                
+                // 根據顏色給予不同的 ring color
+                if (waveColor === '#FFF44F') e.target.classList.add('ring-yellow-300');
+                else if (waveColor === '#ADD8E6') e.target.classList.add('ring-cyan-300');
+                else if (waveColor === '#FF69B4') e.target.classList.add('ring-pink-300');
+                else e.target.classList.add('ring-green-300');
+            });
+        });
+
+    </script>
+</body>
+</html>
